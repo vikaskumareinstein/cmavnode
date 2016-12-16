@@ -18,16 +18,13 @@
 #include <boost/thread/thread.hpp>
 #include "../include/mavlink/ardupilotmega/mavlink.h"
 #include "../include/logging/src/easylogging++.h"
-#include <libconfig.h++>
-
-using namespace libconfig;
 
 #include "mlink.h"
+#include "ConfigFile.h"
 #include "asyncsocket.h"
 #include "serial.h"
 #include "exception.h"
 #include "shell.h"
-
 
 std::string filename;
 
@@ -51,6 +48,8 @@ void printLinkStats(std::vector<std::shared_ptr<mlink>> *links);
 //Helper function to find targets in all the message types
 void getTargets(const mavlink_message_t* msg, int16_t &sysid, int16_t &compid);
 
+
+ConfigFile _configFile;
 
 //Periodic function timings
 #define UPDATE_SYSID_INTERVAL_MS 10
@@ -114,145 +113,56 @@ int main(int argc, char** argv)
             boost::program_options::notify(vm); // throws on error, so do after help in case
             // there are any problems
 
-            if( !vm.count("socket") && !vm.count("serial") && !vm.count("file") )
+            if( !vm.count("file") )
             {
-                LOG(ERROR) << "Program cannot be run without arguments.";
+                LOG(ERROR) << "CMAVNode requires a config file";
                 std::cerr << desc << std::endl;
                 return ERROR_IN_COMMAND_LINE;
             }
 
+            _configFile = ConfigFile(filename);
 
-            if(dumbBroadcast)
-            LOG(INFO) << "WARNING: cmavnode is operating in dumb broadcast mode, all packets are treated as broadcast, and heartbeats are not used to determine routing rules. Hardcoded routing rules still apply.\n USE WITH CARE, RISK OF CIRCULAR ROUTING AND LINK SATURATION";
-            Config cfg;
+            std::vector<std::string> sections = _configFile.GetSections();
 
-            try
+            for (std::vector<std::string>::iterator i = sections.begin(); i < sections.end(); i++)
             {
-                LOG(INFO) << "Reading config file: " << filename;
-                cfg.readFile(filename.c_str());
-            }
-            catch(const FileIOException &fioex)
-            {
-                LOG(ERROR) << "Cannot open config file";
-                return ERROR_IN_COMMAND_LINE;
-            }
-            catch(const ParseException &pex)
-            {
-                LOG(ERROR) << "Cannot parse config file";
-                return ERROR_IN_COMMAND_LINE;
-            }
+                std::cout<<"Section: " << *i << std::endl;
+                std::string type = _configFile.Value(*i,"type");
+                std::cout<<"type: " << type << std::endl;
 
-            const Setting& root = cfg.getRoot();
+                if( type.compare("serial") == 0){
+                    std::string serialport = _configFile.Value(*i, "port");
+                    int baud = _configFile.iValue(*i, "baud");
+                    LOG(INFO) << "Serial Link Found " << serialport << " " << baud;
 
-            try
-            {
-                const Setting &linksconfig = root["links"];
-                int numlinks = linksconfig.getLength();
-
-                LOG(INFO) << "Config file parsed, " << numlinks << " links found.";
-
-                for(int i = 0; i < numlinks; ++i)
-                {
-                    bool valid = false;
-                    bool issocket = false;
-                    const Setting &link = linksconfig[i];
-
-                    std::string link_name;
-                    int receive_from, output_to, output_only_heartbeat_from;
-                    std::string port;
-                    std::string output_only_from_raw;
-                    int baud;
-                    std::string target_ip;
-                    int target_port, receive_port;
-
-                    if(!(link.lookupValue("link_name", link_name)
-                                && link.lookupValue("receive_from", receive_from)
-                                && link.lookupValue("output_to", output_to)
-                                && link.lookupValue("output_only_from", output_only_from_raw)
-                                && link.lookupValue("output_only_heartbeat_from", output_only_heartbeat_from)))
-                    {
-                        LOG(ERROR) << "Invalid link, ignoring";
-                        continue;
-                    }
-
-                    std::vector<std::string> thisLinkoutputfroms;
-                    boost::split(thisLinkoutputfroms, output_only_from_raw, boost::is_any_of(","));
                     std::vector<int> output_only_from;
-                    LOG(INFO) << "Link " << link_name << " will output from:";
-                    for(unsigned int i = 0; i<thisLinkoutputfroms.size(); i++){
-                        int tmpint = atoi(thisLinkoutputfroms.at(i).c_str());
-                        output_only_from.push_back(tmpint);
-                        LOG(INFO) << tmpint;
-                    }
-
-                    try
-                    {
-                        const Setting &socket = link["socket"];
-
-                        if((socket.lookupValue("target_ip",target_ip)
-                                    && socket.lookupValue("target_port",target_port)
-                                    && socket.lookupValue("receive_port",receive_port)))
-                        {
-                            valid = true;
-                            issocket = true;
-                        }
-                        else
-                        {
-                            LOG(ERROR) << "Invalid link, ignoring";
-                            continue;
-                        }
-                            
-                    }
-                    catch(const SettingNotFoundException &nfex)
-                    {
-                        try
-                        {
-                        const Setting &serial = link["serial"];
-
-                        if((serial.lookupValue("port",port)
-                                    && serial.lookupValue("baud",baud)))
-                            valid = true;
-                        else
-                        {
-                            LOG(ERROR) << "Invalid link, ignoring";
-                            continue;
-                        }
-                        }
-                        catch(const SettingNotFoundException &nfex)
-                        {
-                            LOG(ERROR) << "Invalid link, ignoring";
-                            continue;
-                        }
-                    }
-                    if(valid) LOG(INFO) << "Valid link found";
-
+                    output_only_from.push_back(0);
                     link_info infoloc;
-                    infoloc.link_name = link_name;
-                    infoloc.receive_from = receive_from;
-                    infoloc.output_to = output_to;
+                    infoloc.link_name = *i;
                     infoloc.output_only_from = output_only_from;
-                    infoloc.output_only_heartbeat_from = output_only_heartbeat_from;
+                    infoloc.output_only_heartbeat_from = 0;
+                    links.push_back(std::shared_ptr<mlink>(new serial(serialport
+                                                                      ,std::to_string(baud)
+                                                                      ,infoloc)));
+                } else if(type.compare("udp") == 0){
+                    std::string targetip = _configFile.Value(*i, "targetip");
+                    int targetport = _configFile.iValue(*i, "targetport");
+                    int localport = _configFile.iValue(*i, "localport");
+                    LOG(INFO) << "UDP Link Found " << targetip << ":" << targetport << " -> " << localport;
 
-                    if(issocket){
-                        links.push_back(std::shared_ptr<mlink>(new asyncsocket(target_ip
-                                        ,std::to_string(target_port)
-                                        ,std::to_string(receive_port)
-                                        ,infoloc)));
-                    }
-                    else //is serial
-                    {
-                        links.push_back(std::shared_ptr<mlink>(new serial(port
-                                        ,std::to_string(baud)
-                                        ,infoloc)));
-                    }
+                    std::vector<int> output_only_from;
+                    output_only_from.push_back(0);
+                    link_info infoloc;
+                    infoloc.link_name = *i;
+                    infoloc.output_only_from = output_only_from;
+                    infoloc.output_only_heartbeat_from = 0;
+                    links.push_back(std::shared_ptr<mlink>(new asyncsocket(targetip
+                                                                           ,std::to_string(targetport)
+                                                                           ,std::to_string(localport)
+                                                                           ,infoloc)));
+                } else{
+                    LOG(ERROR) << "Invalid link type: " << type;
                 }
-
-            }
-            catch(const SettingNotFoundException &nfex)
-            {
-                LOG(ERROR) << "Cannot find links in config file";
-                return ERROR_IN_COMMAND_LINE;
-
             }
 
         }
