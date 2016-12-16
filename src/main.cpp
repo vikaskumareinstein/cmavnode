@@ -37,40 +37,27 @@ long last_update_sysid_ms = 0;
 long lastPrintLinkStatsMs = 0;
 long myclock();
 
-bool dumbBroadcast = false;
 bool verbose = false;
 
+//Global storage of pointers to links
 std::vector<std::shared_ptr<mlink>> links;
-
-void runMainLoop(std::vector<std::shared_ptr<mlink>> *links);
-
-void printLinkStats(std::vector<std::shared_ptr<mlink>> *links);
-//Helper function to find targets in all the message types
-void getTargets(const mavlink_message_t* msg, int16_t &sysid, int16_t &compid);
-
-
 ConfigFile _configFile;
+
+// -------- FUNCTION DECLARATIONS IN THIS FILE ---------------
+void runMainLoop(std::vector<std::shared_ptr<mlink>> *links);
+void printLinkStats(std::vector<std::shared_ptr<mlink>> *links);
+void getTargets(const mavlink_message_t* msg, int16_t &sysid, int16_t &compid);
+void parseConfigFile(std::string filepath);
+void exitGracefully(int a);
 
 //Periodic function timings
 #define UPDATE_SYSID_INTERVAL_MS 10
 #define MAIN_LOOP_SLEEP_QUEUE_EMPTY_MS 10
-#define PRINT_LINK_STATS_MS 10000
-
-void exitGracefully(int a)
-{
-  std::cout << "Exit code " << a << std::endl;
-    if(shellen)
-    std::cout << "SIGINT blocked. to exit type 'quit'" << std::endl;
-    else
-    {
-    LOG(INFO) << "SIGINT caught, deconstructing links and exiting";
-    exitMainLoop = true;
-    }
-}
-
+#define PRINT_LINK_STATS_MS n10000
 
 namespace
 {
+//RETURN CODES
 const size_t ERROR_IN_COMMAND_LINE = 1;
 const size_t SUCCESS = 0;
 const size_t ERROR_UNHANDLED_EXCEPTION = 2;
@@ -91,21 +78,21 @@ int main(int argc, char** argv)
         boost::program_options::options_description desc("Options");
         desc.add_options()
         ("help", "Print help messages")
-        ("file,f", boost::program_options::value<std::string>(&filename), "configuration file, usage: --file=path/to/file.conf")
-        ("interface,i", boost::program_options::bool_switch(&shellen), "start in interactive mode with cmav shell")
-        ("verbose,v", boost::program_options::bool_switch(&verbose), "verbose output including dropped packets");
+        ("file,f", boost::program_options::value<std::string>(&filename),
+         "configuration file, usage: --file=path/to/file.conf")
+        ("interface,i", boost::program_options::bool_switch(&shellen),
+         "start in interactive mode with cmav shell")
+        ("verbose,v", boost::program_options::bool_switch(&verbose),
+         "verbose output including dropped packets");
 
         boost::program_options::variables_map vm;
         try
         {
-            boost::program_options::store(boost::program_options::parse_command_line(argc, argv, desc),
-                                          vm); // can throw
-
-            /** --help option
-            */
+            boost::program_options::store(
+                boost::program_options::parse_command_line(argc, argv, desc), vm);
             if ( vm.count("help")  )
             {
-                std::cout << "Basic Command Line Parameter App" << std::endl
+                std::cout << "CMAVNode - Flexible MAVLink Router" << std::endl
                           << desc << std::endl;
                 return SUCCESS;
             }
@@ -120,50 +107,8 @@ int main(int argc, char** argv)
                 return ERROR_IN_COMMAND_LINE;
             }
 
-            _configFile = ConfigFile(filename);
-
-            std::vector<std::string> sections = _configFile.GetSections();
-
-            for (std::vector<std::string>::iterator i = sections.begin(); i < sections.end(); i++)
-            {
-                std::cout<<"Section: " << *i << std::endl;
-                std::string type = _configFile.Value(*i,"type");
-                std::cout<<"type: " << type << std::endl;
-
-                if( type.compare("serial") == 0){
-                    std::string serialport = _configFile.Value(*i, "port");
-                    int baud = _configFile.iValue(*i, "baud");
-                    LOG(INFO) << "Serial Link Found " << serialport << " " << baud;
-
-                    std::vector<int> output_only_from;
-                    output_only_from.push_back(0);
-                    link_info infoloc;
-                    infoloc.link_name = *i;
-                    infoloc.output_only_from = output_only_from;
-                    infoloc.output_only_heartbeat_from = 0;
-                    links.push_back(std::shared_ptr<mlink>(new serial(serialport
-                                                                      ,std::to_string(baud)
-                                                                      ,infoloc)));
-                } else if(type.compare("udp") == 0){
-                    std::string targetip = _configFile.Value(*i, "targetip");
-                    int targetport = _configFile.iValue(*i, "targetport");
-                    int localport = _configFile.iValue(*i, "localport");
-                    LOG(INFO) << "UDP Link Found " << targetip << ":" << targetport << " -> " << localport;
-
-                    std::vector<int> output_only_from;
-                    output_only_from.push_back(0);
-                    link_info infoloc;
-                    infoloc.link_name = *i;
-                    infoloc.output_only_from = output_only_from;
-                    infoloc.output_only_heartbeat_from = 0;
-                    links.push_back(std::shared_ptr<mlink>(new asyncsocket(targetip
-                                                                           ,std::to_string(targetport)
-                                                                           ,std::to_string(localport)
-                                                                           ,infoloc)));
-                } else{
-                    LOG(ERROR) << "Invalid link type: " << type;
-                }
-            }
+            //parseConfigFile and allocate links
+            parseConfigFile(filename);
 
         }
         catch(boost::program_options::error& e)
@@ -174,12 +119,16 @@ int main(int argc, char** argv)
         }
         /*--------------END COMMAND LINE PARSING------------------*/
 
+        if(links.size() == 0)
+        {
+            LOG(ERROR) << "No links specified, exiting";
+            return ERROR_IN_COMMAND_LINE;
+        }
         LOG(INFO) << "Command line arguments parsed succesfully";
-
         LOG(INFO) << "Links Initialized, routing loop starting";
 
+        //Assign link id... should do this at allocation but it breaks something
         int counter = 0;
-
         for(unsigned int i = 0; i < links.size(); i++)
         {
             links.at(i)->link_id = counter++;
@@ -187,17 +136,18 @@ int main(int argc, char** argv)
 
         boost::thread shell;
         if(shellen)
-        shell = boost::thread(runShell);
+        {
+            shell = boost::thread(runShell);
+        }
 
         while(!exitMainLoop)
         {
-
             runMainLoop(&links);
         }
 
 
         if(shellen)
-        shell.join();
+            shell.join();
 
         /*----------------END MAIN CODE------------------*/
     }
@@ -212,6 +162,95 @@ int main(int argc, char** argv)
     return SUCCESS;
 } //main
 
+void parseConfigFile(std::string filepath)
+{
+    _configFile = ConfigFile(filepath);
+
+    std::vector<std::string> sections = _configFile.GetSections();
+
+    for (std::vector<std::string>::iterator i = sections.begin(); i < sections.end(); i++)
+    {
+        std::string type;
+        bool isSerial = false;
+        bool isUDP = false;
+        std::cout<<"Link: " << *i << std::endl;
+        try
+        {
+            type = _configFile.Value(*i,"type");
+            std::cout<<"Type: " << type << std::endl;
+        }
+        catch(int e)
+        {
+            LOG(ERROR) << "Link has no type";
+            continue;
+        }
+        std::string serialport;
+        int baud;
+        std::string targetip;
+        int targetport, localport;
+
+        //hack for now to hardcode the link_info
+        std::vector<int> output_only_from;
+        output_only_from.push_back(0);
+        link_info infoloc;
+        infoloc.link_name = *i;
+        infoloc.output_only_from = output_only_from;
+        infoloc.output_only_heartbeat_from = 0;
+
+        if( type.compare("serial") == 0)
+        {
+            try
+            {
+                serialport = _configFile.Value(*i, "port");
+                baud = _configFile.iValue(*i, "baud");
+            }
+            catch(int e)
+            {
+                LOG(ERROR) << "Invalid serial link";
+                continue;
+            }
+            isSerial = true;
+            LOG(INFO) << "Valid Serial Link Found " << serialport << " " << baud;
+        }
+        else if(type.compare("udp") == 0)
+        {
+            try
+            {
+                targetip = _configFile.Value(*i, "targetip");
+                targetport = _configFile.iValue(*i, "targetport");
+                localport = _configFile.iValue(*i, "localport");
+            }
+            catch(int e)
+            {
+                LOG(ERROR) << "Invalid UDP link";
+                continue;
+            }
+            isUDP = true;
+            LOG(INFO) << "Valid UDP Link Found " << targetip << ":" << targetport << " -> " << localport;
+        }
+        else
+        {
+            LOG(ERROR) << "Invalid link type: " << type;
+            continue;
+        }
+
+        //if we made it this far without break we have a valid link of some sort
+        if(isSerial)
+        {
+            links.push_back(std::shared_ptr<mlink>(new serial(serialport
+                                                   ,std::to_string(baud)
+                                                   ,infoloc)));
+        }
+        else if (isUDP)
+        {
+            links.push_back(
+                std::shared_ptr<mlink>(new asyncsocket(targetip,
+                                       std::to_string(targetport)
+                                       ,std::to_string(localport)
+                                       ,infoloc)));
+        }
+    }
+}
 
 void runMainLoop(std::vector<std::shared_ptr<mlink>> *links)
 {
@@ -248,9 +287,10 @@ void runMainLoop(std::vector<std::shared_ptr<mlink>> *links)
                     for(unsigned int z = 0; z < links->at(n)->info.output_only_from.size(); z++)
                     {
                         if(msg.sysid == links->at(n)->info.output_only_from.at(z))
-                        dontSendOnThisLink = false;
+                            dontSendOnThisLink = false;
                     }
-                } else dontSendOnThisLink = false;
+                }
+                else dontSendOnThisLink = false;
                 if(links->at(n)->info.output_only_heartbeat_from != 0)
                 {
                     if(msg.msgid == MAVLINK_MSG_ID_HEARTBEAT && msg.sysid != links->at(n)->info.output_only_heartbeat_from)
@@ -280,34 +320,33 @@ void runMainLoop(std::vector<std::shared_ptr<mlink>> *links)
 
 void printLinkStats(std::vector<std::shared_ptr<mlink>> *links)
 {
+    LOG(INFO) << "=====================================";
+    for(unsigned int i = 0; i < links->size(); i++)
+    {
+        std::ostringstream buffer;
 
+        buffer << "Link: " << links->at(i)->link_id << " " << links->at(i)->info.link_name;
+        if(links->at(i)->is_kill) buffer << " DEAD ";
+        else if(links->at(i)->up) buffer << " UP ";
+        else buffer << " DOWN ";
 
+        buffer << " Received: " << links->at(i)->recentPacketCount << " Sent: " <<
+               links->at(i)->recentPacketSent << " Systems on link: ";
 
-        LOG(INFO) << "=====================================";
-        for(unsigned int i = 0; i < links->size(); i++)
+        if(links->at(i)->sysIDpub.size() != 0)
         {
-            std::ostringstream buffer;
-
-            buffer << "Link: " << links->at(i)->link_id << " " << links->at(i)->info.link_name;
-            if(links->at(i)->is_kill) buffer << " DEAD ";
-            else if(links->at(i)->up) buffer << " UP ";
-            else buffer << " DOWN ";
-
-            buffer << " Received: " << links->at(i)->recentPacketCount << " Sent: " <<
-                links->at(i)->recentPacketSent << " Systems on link: ";
-
-                        if(links->at(i)->sysIDpub.size() != 0){
-                        for(unsigned int k = 0; k < links->at(i)->sysIDpub.size(); k++)
-                        {
-                            buffer << (int)links->at(i)->sysIDpub.at(k) << " ";
-                        }
-                        } else buffer << "none";
-
-                links->at(i)->recentPacketCount = 0;
-                links->at(i)->recentPacketSent = 0;
-            LOG(INFO) << buffer.str();
+            for(unsigned int k = 0; k < links->at(i)->sysIDpub.size(); k++)
+            {
+                buffer << (int)links->at(i)->sysIDpub.at(k) << " ";
+            }
         }
-        LOG(INFO) << "+++++++++++++++++++++++++++++++++++++";
+        else buffer << "none";
+
+        links->at(i)->recentPacketCount = 0;
+        links->at(i)->recentPacketSent = 0;
+        LOG(INFO) << buffer.str();
+    }
+    LOG(INFO) << "+++++++++++++++++++++++++++++++++++++";
 }
 
 void getTargets(const mavlink_message_t* msg, int16_t &sysid, int16_t &compid)
@@ -533,4 +572,16 @@ long myclock()
     static clock::time_point start = clock::now();
     duration elapsed = clock::now() - start;
     return elapsed.count();
+}
+
+void exitGracefully(int a)
+{
+    std::cout << "Exit code " << a << std::endl;
+    if(shellen)
+        std::cout << "SIGINT blocked. to exit type 'quit'" << std::endl;
+    else
+    {
+        LOG(INFO) << "SIGINT caught, deconstructing links and exiting";
+        exitMainLoop = true;
+    }
 }
