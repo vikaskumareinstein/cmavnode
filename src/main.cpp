@@ -12,6 +12,9 @@
 #include <boost/ref.hpp>
 #include <iomanip>
 
+#include <stdio.h>
+#include <time.h>
+
 // CMAVNode headers
 #include "mlink.h"
 #include "asyncsocket.h"
@@ -209,6 +212,40 @@ bool should_forward_message(mavlink_message_t &msg, std::shared_ptr<mlink> *inco
     return true;
 }
 
+static time_t linkstats_last_written_time = 0;
+static const time_t linkstats_write_interval = 1; // seconds
+
+void updateLinkStatsFile(std::vector<std::shared_ptr<mlink> > *links)
+{
+    time_t now = time(nullptr);
+    if (now - linkstats_last_written_time < linkstats_write_interval) {
+        return;
+    }
+    linkstats_last_written_time = now;
+
+    const char *filename = "/tmp/cmavnode-links.txt";
+    const char *filename_new = "/tmp/cmavnode-links.txt-new";
+    FILE *out = fopen(filename_new, "w+");
+    if (out == nullptr) {
+        ::fprintf(stderr, "Failed to open (%s): %s\n", filename_new, strerror(errno));
+        return;
+    }
+    for (auto link = links->begin(); link != links->end(); ++link)
+    {
+        boost::asio::ip::udp::endpoint *ep = (*link)->sender_endpoint();
+        if (ep == nullptr) {
+            continue;
+        }
+        ::fprintf(out, "%s:%u %lu\n", ep->address().to_string().c_str(),(uint16_t)ep->port(), (*link)->totalPacketCount);
+    }
+    fclose(out);
+    if (rename(filename_new, filename) == -1) {
+        ::fprintf(stderr, "Failed to rename (%s) to %s: %s\n", filename_new,
+                  filename, strerror(errno));
+        return;
+    }
+}
+
 void runMainLoop(std::vector<std::shared_ptr<mlink> > *links, bool &verbose)
 {
     // Gets run in a while loop once links are setup
@@ -257,6 +294,9 @@ void runMainLoop(std::vector<std::shared_ptr<mlink> > *links, bool &verbose)
             }
         }
     }
+
+    updateLinkStatsFile(links);
+
     if (should_sleep) {
         boost::this_thread::sleep(boost::posix_time::milliseconds(MAIN_LOOP_SLEEP_QUEUE_EMPTY_MS));
     }
