@@ -23,7 +23,7 @@ int readConfigFile(std::string &filename, std::vector<std::shared_ptr<mlink> > &
         std::string serialport;
         int baud;
         std::string targetip;
-        std::string bindip;
+        std::string *bindip;
         std::string bcastip;
         bool flowcontrol = false;
         bool bcastlock = true;
@@ -48,10 +48,10 @@ int readConfigFile(std::string &filename, std::vector<std::shared_ptr<mlink> > &
         {
             if(type.compare("udpbcast") == 0 && _configFile.intValue(thisSection, "bcastport", &bcastport) && _configFile.strValue(thisSection, "bcastip", &bcastip))
             {
-                if(!_configFile.strValue(thisSection, "bindip", &bindip))
+                if(!_configFile.strValue(thisSection, "bindip", bindip))
                 {
                     // setting bindip in config file specifies interface to broadcast on
-                    bindip = "0.0.0.0"; //If bind ip not specified use 0.0.0.0... ipv4_any()
+                    bindip = nullptr;
                 }
 
                 if(bcastip.find("255") == std::string::npos)

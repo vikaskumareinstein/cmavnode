@@ -75,18 +75,19 @@ asyncsocket::asyncsocket(
 
 // Broadcast constructor
 asyncsocket::asyncsocket(bool bcastlock,
-                         const std::string& bindaddress,
+                         const std::string* bindaddress,
                          const std::string& bcastaddress,
                          const std::string& bcastport,
                          link_info info_) : io_service_(), mlink(info_),
-    socket_(io_service_, boost::asio::ip::udp::endpoint(boost::asio::ip::address::from_string(bindaddress), 0))
+                                            socket_(io_service_, boost::asio::ip::udp::endpoint())
 {
     socket_.set_option(boost::asio::ip::udp::socket::reuse_address(true));
     socket_.set_option(boost::asio::socket_base::broadcast(true));
 
-    boost::asio::ip::udp::endpoint senderEndpoint(boost::asio::ip::address_v4::from_string(bcastaddress), std::stoi(bcastport));
-    endpoint_ = senderEndpoint;
-
+    endpoint_ = boost::asio::ip::udp::endpoint(boost::asio::ip::address_v4::from_string(bcastaddress), std::stoi(bcastport));
+    if (bindaddress != nullptr) {
+        // FIXME: do bind here
+    }
     //Start the read and write threads
     write_thread = boost::thread(&asyncsocket::runWriteThread, this);
 
