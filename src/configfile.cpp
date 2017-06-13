@@ -1,5 +1,7 @@
 #include "configfile.h"
 
+#define MAV_PACKET_TIMEOUT_MS 10000
+
 #include <fstream>
 
 int readConfigFile(std::string &filename, std::vector<std::shared_ptr<mlink> > &links)
@@ -30,6 +32,7 @@ int readConfigFile(std::string &filename, std::vector<std::shared_ptr<mlink> > &
         int targetport = 0;
         int localport = 0;
         int bcastport = 0;
+        int timeout;
 
         if( type.compare("serial") == 0)
         {
@@ -189,6 +192,11 @@ void readLinkInfo(ConfigFile* _configFile, std::string thisSection, link_info* _
 
     // Identify SiK radio links
     _configFile->boolValue(thisSection, "sik_radio", &_info->SiK_radio);
+
+    // allow setting a timeout on the link
+    if (!_configFile->intValue(thisSection, "timeout", &_info->timeout)) {
+        _info->timeout = MAV_PACKET_TIMEOUT_MS;
+    }
 }
 
 std::string trim(std::string const& source, char const* delims = " \t\r\n")

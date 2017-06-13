@@ -182,13 +182,17 @@ void mlink::checkForDeadSysID()
     //get the time now
     boost::posix_time::ptime nowTime = boost::posix_time::microsec_clock::local_time();
 
+    if (info.timeout == -1) {
+        return;
+    }
+
     auto next = sysID_stats.begin();
     while (next != sysID_stats.end()) {
         auto iter = next;
         next++;
         boost::posix_time::time_duration dur = nowTime - iter->second.last_packet_time;
         long time_between_packets = dur.total_milliseconds();
-        if(time_between_packets > MAV_PACKET_TIMEOUT_MS && totalPacketCount > 0)
+        if(time_between_packets > info.timeout && totalPacketCount > 0)
         {
             // Log then erase
             std::cout << "Removing sysID: " << (int)(iter->first) << " from link: " << info.link_name << " (idle " << (double)time_between_packets/1000 << " s)" << std::endl;

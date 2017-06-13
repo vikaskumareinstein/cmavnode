@@ -33,7 +33,6 @@
 #define MAV_OUTGOING_LENGTH 2000
 #define OUT_QUEUE_EMPTY_SLEEP 10
 #define MAV_INCOMING_BUFFER_LENGTH 2041
-#define MAV_PACKET_TIMEOUT_MS 10000
 
 struct queue_counter
 {
@@ -64,6 +63,7 @@ struct link_info
     int sim_packet_loss = 0; //0-100, amount of packets that should be dropped
     bool reject_repeat_packets = false;
     bool SiK_radio = false;
+    int timeout = 0; // -1 means no timeout
 };
 
 class mlink
