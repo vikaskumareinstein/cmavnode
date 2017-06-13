@@ -116,6 +116,9 @@ int readConfigFile(std::string &filename, std::vector<std::shared_ptr<mlink> > &
         {
             switch(udp_type_)
             {
+            case UDP_TYPE_NONE:
+                // just here to make the computer happy...
+                break;
             case UDP_TYPE_FULLY_SPECIFIED:
                 links.push_back(
                     std::shared_ptr<mlink>(new asyncsocket(targetip,

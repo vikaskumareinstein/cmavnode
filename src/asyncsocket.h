@@ -45,8 +45,8 @@ public:
     ~asyncsocket();
 
     //override virtuals from link
-    void runWriteThread();
-    void runReadThread();
+    void runWriteThread() override;
+    void runReadThread() override;
 
     // return endpoint corresponding to sender (if any)
     boost::asio::ip::udp::endpoint *sender_endpoint() override {
